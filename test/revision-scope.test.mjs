@@ -80,4 +80,21 @@ test('inserting a paragraph at the start is out of scope', () => {
   assert.equal(report.outOfScope[0].kind, 'inserted')
 })
 
+test('deleting is allowed when the note asks to delete (even with 改写 tag)', () => {
+  const base = parseScreenplay(BASE)
+  const next = parseScreenplay(BASE.replace('\n\n陈默坐在沙发上。', ''))
+  const note = { id: 'a2', blockIndex: 2, tag: '改写', note: '这一段删了吧', level: 'block' }
+  const report = evaluateRevisionScope(base, next, [note])
+  assert.equal(report.outOfScope.length, 0)
+  assert.equal(report.inScope, 1)
+})
+
+test('inserting after a note that asks to add is allowed', () => {
+  const base = parseScreenplay(BASE)
+  const next = parseScreenplay(`${BASE}\n\n（门铃响了一声。）`)
+  const note = { id: 'a3', blockIndex: 3, tag: '改写', note: '这里加一句门铃', level: 'block' }
+  const report = evaluateRevisionScope(base, next, [note])
+  assert.equal(report.outOfScope.length, 0)
+})
+
 console.log(`\n${passed} revision-scope tests passed`)

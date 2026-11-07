@@ -701,20 +701,21 @@ window.__ModuleLoader__.load({
 
     function annotationCoverage(annotations) {
       const coverage = new Map()
-      const add = (index, tag) => {
+      const add = (index, tag, note) => {
         if (!Number.isInteger(index) || index < 0) return
-        if (!coverage.has(index)) coverage.set(index, new Set())
-        if (typeof tag === 'string' && tag !== '') coverage.get(index).add(tag)
+        if (!coverage.has(index)) coverage.set(index, [])
+        coverage.get(index).push({ tag: typeof tag === 'string' ? tag : '', note: typeof note === 'string' ? note : '' })
       }
       for (const annotation of annotations === undefined || annotations === null ? [] : annotations) {
         if (annotation === null || typeof annotation !== 'object') continue
         const tag = typeof annotation.tag === 'string' ? annotation.tag : ''
+        const note = typeof annotation.note === 'string' ? annotation.note : ''
         if (annotation.level === 'sentence' && Array.isArray(annotation.segments)) {
           for (const segment of annotation.segments) {
-            if (segment !== null && typeof segment === 'object') add(segment.blockIndex, tag)
+            if (segment !== null && typeof segment === 'object') add(segment.blockIndex, tag, note)
           }
         } else {
-          add(annotation.blockIndex, tag)
+          add(annotation.blockIndex, tag, note)
         }
       }
       return coverage
@@ -729,10 +730,12 @@ window.__ModuleLoader__.load({
       const alignment = alignScreenplayBlocks(baseBlocks, newBlocks)
       const coverage = annotationCoverage(annotations)
       const covered = (index) => coverage.has(index)
-      const tagged = (index, tag) => {
-        const tags = coverage.get(index)
-        return tags !== undefined && tags.has(tag)
-      }
+      const entriesOf = (index) => coverage.get(index) || []
+      const tagged = (index, tag) => entriesOf(index).some((entry) => entry.tag === tag)
+      // Honor intent independent of the tag: a note that asks to delete or add
+      // is a legitimate scope change even when the user picked 改写.
+      const allowsDelete = (index) => entriesOf(index).some((entry) => entry.tag === '删戏' || /删/.test(entry.note))
+      const allowsInsert = (index) => entriesOf(index).some((entry) => entry.tag === '加戏' || /[加增补]/.test(entry.note))
       const outOfScope = []
       let inScope = 0
       for (const gap of alignment.gaps) {
@@ -741,7 +744,7 @@ window.__ModuleLoader__.load({
         const paired = Math.min(baseGap.length, newGap.length)
         for (let k = 0; k < paired; k += 1) {
           const baseIndex = baseGap[k]
-          if (covered(baseIndex) || tagged(baseIndex, '删戏')) {
+          if (covered(baseIndex) || allowsDelete(baseIndex)) {
             inScope += 1
             continue
           }
@@ -750,15 +753,15 @@ window.__ModuleLoader__.load({
         if (baseGap.length > newGap.length) {
           for (let k = paired; k < baseGap.length; k += 1) {
             const baseIndex = baseGap[k]
-            if (tagged(baseIndex, '删戏')) {
+            if (allowsDelete(baseIndex)) {
               inScope += 1
               continue
             }
             outOfScope.push({ kind: 'deleted', baseIndex, before: baseBlocks[baseIndex].text })
           }
         } else if (newGap.length > baseGap.length) {
-          const insertionAllowed = (gap.beforeBase !== null && tagged(gap.beforeBase, '加戏'))
-            || (gap.afterBase !== null && tagged(gap.afterBase, '加戏'))
+          const insertionAllowed = (gap.beforeBase !== null && allowsInsert(gap.beforeBase))
+            || (gap.afterBase !== null && allowsInsert(gap.afterBase))
           for (let k = paired; k < newGap.length; k += 1) {
             if (insertionAllowed) {
               inScope += 1
