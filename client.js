@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.2.10'
+    const BUILD = '0.3.0'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -234,7 +234,11 @@ window.__ModuleLoader__.load({
       return `${dir}${SIDECAR_DIR}/${name}/${rest.join('/')}`
     }
 
-    // ── content helpers ────────────────────────────────────────────────────
+    // ── screenplay block model (P0-1) ──────────────────────────────────────
+    // #region screenplay-parser
+    // Eight screenplay element types (aligned with Narracore's typed blocks) plus
+    // an internal `heading` for acts/titles. Each paragraph block is the
+    // annotation unit; its typed lines drive rendering, TOC and future export.
 
     function fnv1a(text) {
       let hash = 0x811c9dc5
@@ -245,52 +249,167 @@ window.__ModuleLoader__.load({
       return (hash >>> 0).toString(16).padStart(8, '0')
     }
 
-    function splitBlocks(text) {
-      const normalized = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-      const raw = normalized.split(/\n[ \t]*\n/)
-      const blocks = []
-      for (const part of raw) {
-        const blockText = part.replace(/^\n+/, '').replace(/\n+$/, '')
-        if (blockText.trim() === '') continue
-        blocks.push({ index: blocks.length, text: blockText, hash: fnv1a(blockText.trim()) })
+    const META_SPEAKERS = new Set(['一句话梗概', '梗概', '人物表', '场景表', '时间', '地点', '备注'])
+    const ENGLISH_SCENE_RE = /^(?:INT|EXT|EST|INT\.?\/EXT\.?|I\/E)[\s./]/i
+    const CHINESE_SCENE_RE = /^(?:第\s*[0-9一二三四五六七八九十百零〇两]+\s*[场幕]|场\s*[0-9一二三四五六七八九十百零〇两]+|场景\s*[0-9一二三四五六七八九十百零〇两]+|\d+\s*[-－]\s*\d+\s*(?:内景|外景|内|外)|(?:内景|外景|内外景)\s)/
+    const CHINESE_SCENE_CONTAINS_RE = /(?:内景|外景)/
+    const TRANSITION_RE = /^(?:切至|切到|叠化|淡入|淡出|闪回|闪出|划入|划出|FADE\s+(?:IN|OUT)|CUT\s+TO|DISSOLVE\s+TO|SMASH\s+CUT|MATCH\s+CUT)/i
+    const TRANSITION_CAPS_RE = /^[A-Z0-9 .,'()\-]+TO:?$/
+    const SHOT_RE = /^(?:▲|镜头|特写|近景|中景|远景|全景|空镜|俯拍|仰拍|航拍|跟拍|摇镜|推镜|拉镜|升格|降格)/
+    const NOTE_RE = /^\[\[[\s\S]*\]\]$/
+    const PAREN_RE = /^[（(][\s\S]*[）)]$/
+    const INLINE_DIALOGUE_RE = /^([^：:]{1,24})[：:]([\s\S]*)$/
+    const HEADING_RE = /^(#{1,6})\s+/
+
+    function classifyScreenplayLine(rawLine) {
+      const line = String(rawLine).trim()
+      if (line === '') return { type: 'blank' }
+      const heading = HEADING_RE.exec(line)
+      if (heading !== null) return { type: 'heading', level: heading[1].length }
+      if (NOTE_RE.test(line)) return { type: 'note' }
+      if (ENGLISH_SCENE_RE.test(line)) return { type: 'scene_heading' }
+      if (CHINESE_SCENE_RE.test(line)) return { type: 'scene_heading' }
+      if (CHINESE_SCENE_CONTAINS_RE.test(line) && line.length <= 40) return { type: 'scene_heading' }
+      if (TRANSITION_RE.test(line) || TRANSITION_CAPS_RE.test(line) || /^>/.test(line)) return { type: 'transition' }
+      if (SHOT_RE.test(line)) return { type: 'shot' }
+      if (PAREN_RE.test(line)) return { type: 'parenthetical' }
+      const dialogue = INLINE_DIALOGUE_RE.exec(line)
+      if (dialogue !== null) {
+        const speaker = dialogue[1].trim()
+        if (!/^(?:https?|mailto|file|www)$/i.test(speaker) && !META_SPEAKERS.has(speaker)) {
+          return { type: 'inline_dialogue', speaker, text: dialogue[2] }
+        }
       }
-      return blocks
+      return { type: 'action' }
     }
 
-    function blockLineClass(line) {
-      const trimmed = line.trim()
-      if (trimmed === '') return 'spm-line'
-      if (/^#{1,6}\s/.test(trimmed)) return 'spm-line spm-line-heading'
-      if (/^(?:INT|EXT|INT\.\/EXT|I\/E)\b/i.test(trimmed)) return 'spm-line spm-line-scene'
-      if (/^(?:场景|场)\s*[\d一二三四五六七八九十]+/.test(trimmed)) return 'spm-line spm-line-scene'
-      if (/^第[一二三四五六七八九十百零〇两\d]+[幕集]/.test(trimmed)) return 'spm-line spm-line-act'
-      if (/^(?:内景|外景|内|外)\s/.test(trimmed) || /(?:内景|外景)/.test(trimmed) && trimmed.length <= 40) {
-        return 'spm-line spm-line-scene'
-      }
-      if (/^[「“"]/.test(trimmed)) return 'spm-line spm-line-quote'
-      return 'spm-line'
+    function isCueCandidate(rawLine) {
+      const line = String(rawLine).trim()
+      if (line === '' || line.length > 12) return false
+      if (/[。！？!?，,、；;：:]$/.test(line)) return false
+      if (/^[▲#\[（(>「“"—\-]/.test(line)) return false
+      if (CHINESE_SCENE_RE.test(line) || ENGLISH_SCENE_RE.test(line) || TRANSITION_RE.test(line)) return false
+      return true
+    }
+
+    function isEnglishCueCandidate(rawLine) {
+      const line = String(rawLine).trim()
+      return line.length > 0 && line.length <= 30 && /^[A-Z][A-Z0-9 .'()\-]*$/.test(line) && !/[.:]$/.test(line)
+    }
+
+    function isStructuralScreenplayLine(classified) {
+      return classified.type === 'scene_heading' || classified.type === 'heading' || classified.type === 'transition' || classified.type === 'note'
     }
 
     /**
-     * Split a `人物：台词` line into a speaker prefix and its dialogue, so a
-     * Chinese screenplay reads like a script instead of a wall of plain lines.
-     * Lines that are scene headings, act headings, action (▲) or markdown are
-     * left alone.
+     * Parse screenplay text into paragraph blocks. A block is the annotation
+     * unit and carries typed lines for rendering, TOC and export.
      *
-     * @param line - one script line.
-     * @returns the speaker and dialogue text, or null for a non-dialogue line.
+     * @param text - raw screenplay text.
+     * @returns blocks: `{ index, type, text, hash, lines, speaker?, inline?, headingLevel? }`.
      */
-    function dialogueLineParts(line) {
-      const trimmed = line.trim()
-      if (trimmed === '' || trimmed.startsWith('▲') || trimmed.startsWith('#')) return null
-      if (/^(?:场景|场)\s*[\d一二三四五六七八九十]+/.test(trimmed)) return null
-      if (/^第[一二三四五六七八九十百零〇两\d]+[幕集]/.test(trimmed)) return null
-      if (/^[「“"]/.test(trimmed)) return null
-      const match = /^([^：:]{1,24})[：:]([\s\S]*)$/.exec(trimmed)
-      if (match === null) return null
-      if (/^(?:https?|mailto|file|www)$/i.test(match[1].trim())) return null
-      if (/^(?:一句话梗概|梗概|人物表|场景表)$/.test(match[1].trim())) return null
-      return { speaker: `${match[1].trim()}：`, text: match[2] }
+    function parseScreenplay(text) {
+      const normalized = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      const chunks = normalized.split(/\n[ \t]*\n+/)
+      const blocks = []
+      const pushBlock = (lines, extra) => {
+        const body = lines.map((line) => line.text)
+        const blockText = body.join('\n')
+        if (blockText.trim() === '') return
+        blocks.push(Object.assign({
+          index: blocks.length,
+          text: blockText,
+          hash: fnv1a(blockText.trim()),
+          lines,
+        }, extra === undefined ? {} : extra))
+      }
+      for (const chunk of chunks) {
+        const rawLines = chunk.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+        if (rawLines.length === 0) continue
+        let position = 0
+        while (position < rawLines.length) {
+          const raw = rawLines[position]
+          const classified = classifyScreenplayLine(raw)
+          if (classified.type === 'blank') {
+            position += 1
+            continue
+          }
+          if (classified.type === 'heading') {
+            pushBlock([{ type: 'heading', text: raw.replace(HEADING_RE, '') }], { type: 'heading', headingLevel: classified.level })
+            position += 1
+            continue
+          }
+          if (classified.type === 'scene_heading' || classified.type === 'transition' || classified.type === 'note' || classified.type === 'shot' || classified.type === 'parenthetical') {
+            const lineText = classified.type === 'transition' ? raw.replace(/^>\s*/, '') : raw
+            pushBlock([{ type: classified.type, text: lineText }], { type: classified.type })
+            position += 1
+            continue
+          }
+          if (classified.type === 'inline_dialogue') {
+            pushBlock([{ type: 'dialogue', text: raw }], { type: 'dialogue', inline: true, inlineSpeaker: `${classified.speaker}：` })
+            position += 1
+            continue
+          }
+          const nextRaw = position + 1 < rawLines.length ? rawLines[position + 1] : undefined
+          const nextClassified = nextRaw === undefined ? { type: 'blank' } : classifyScreenplayLine(nextRaw)
+          const cueHere = isCueCandidate(raw) || isEnglishCueCandidate(raw)
+          if (cueHere && nextRaw !== undefined && nextClassified.type !== 'blank' && !isStructuralScreenplayLine(nextClassified)) {
+            const lines = [{ type: 'character', text: raw }]
+            position += 1
+            while (position < rawLines.length) {
+              const inner = rawLines[position]
+              const innerClassified = classifyScreenplayLine(inner)
+              if (innerClassified.type === 'parenthetical') {
+                lines.push({ type: 'parenthetical', text: inner })
+                position += 1
+                continue
+              }
+              if (innerClassified.type === 'action' || innerClassified.type === 'dialogue') {
+                lines.push({ type: 'dialogue', text: inner })
+                position += 1
+                continue
+              }
+              break
+            }
+            pushBlock(lines, { type: 'dialogue', speaker: raw })
+            continue
+          }
+          const actionLines = []
+          while (position < rawLines.length) {
+            const inner = rawLines[position]
+            const innerClassified = classifyScreenplayLine(inner)
+            if (innerClassified.type !== 'action' && innerClassified.type !== 'shot' && innerClassified.type !== 'parenthetical') break
+            actionLines.push({ type: innerClassified.type === 'shot' ? 'shot' : 'action', text: inner })
+            position += 1
+          }
+          if (actionLines.length === 0) {
+            actionLines.push({ type: 'action', text: raw })
+            position += 1
+          }
+          pushBlock(actionLines, { type: 'action' })
+        }
+      }
+      return blocks
+    }
+    // #endregion screenplay-parser
+
+    function splitBlocks(text) {
+      return parseScreenplay(text)
+    }
+
+    /** CSS class for one typed screenplay line. */
+    function screenplayLineClass(type) {
+      switch (type) {
+        case 'heading': return 'spm-line spm-line-heading'
+        case 'scene_heading': return 'spm-line spm-line-scene'
+        case 'transition': return 'spm-line spm-line-transition'
+        case 'shot': return 'spm-line spm-line-shot'
+        case 'note': return 'spm-line spm-line-note'
+        case 'character': return 'spm-line spm-line-character'
+        case 'parenthetical': return 'spm-line spm-line-paren'
+        case 'dialogue': return 'spm-line spm-line-dialogue'
+        default: return 'spm-line'
+      }
     }
 
     /** Locate a stored quote inside a block's text (exact, then whitespace-insensitive). */
@@ -623,6 +742,11 @@ window.__ModuleLoader__.load({
 .spm-line-scene{font-weight:600;letter-spacing:.02em;margin-top:4px}
 .spm-line-act{font-weight:600;font-size:calc(var(--spm-font-size,13.5px) + 1px);margin-top:4px}
 .spm-line-dialogue{padding-left:1.1em}
+.spm-line-transition{text-align:right;font-style:italic;color:var(--dsw-alias-label-secondary)}
+.spm-line-shot{color:var(--dsw-alias-label-secondary)}
+.spm-line-note{font-style:italic;color:var(--dsw-alias-label-secondary);border-left:2px solid var(--dsw-alias-border-l2);padding-left:6px}
+.spm-line-character{font-weight:600;margin-top:4px}
+.spm-line-paren{font-style:italic;color:var(--dsw-alias-label-secondary);padding-left:2.2em}
 .spm-speaker{font-weight:600;color:var(--dsw-alias-label-primary)}
 .spm-line-quote{padding-left:2px}
 .spm-hl{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 20%, transparent);color:inherit;border-radius:2px}
@@ -1129,14 +1253,10 @@ window.__ModuleLoader__.load({
       const toc = useMemo(() => {
         const entries = []
         for (const block of blocks) {
-          const first = block.text.split('\n')[0].trim()
-          if (first === '') continue
-          if (/^#{1,6}\s/.test(first)) {
-            entries.push({ index: block.index, level: 1, text: first.replace(/^#{1,6}\s+/, '') })
-          } else if (/^第[一二三四五六七八九十百零〇两\d]+[幕集]/.test(first)) {
-            entries.push({ index: block.index, level: 1, text: first })
-          } else if (/^(?:场景|场)\s*[\d一二三四五六七八九十]+/.test(first)) {
-            entries.push({ index: block.index, level: 2, text: first })
+          if (block.type === 'scene_heading') {
+            entries.push({ index: block.index, level: 2, text: block.text.split('\n')[0] })
+          } else if (block.type === 'heading') {
+            entries.push({ index: block.index, level: 1, text: block.text })
           }
         }
         return entries
@@ -1529,11 +1649,9 @@ window.__ModuleLoader__.load({
       }
 
       const renderBlock = (block, inGroup) => {
-        const lines = block.text.split('\n')
-        const firstLine = lines.length > 0 ? lines[0] : ''
-        const firstClass = blockLineClass(firstLine)
-        const isScene = firstClass.includes('spm-line-scene')
-        const isAct = firstClass.includes('spm-line-act') || /^#{1,6}\s/.test(firstLine.trim())
+        const lineInfos = Array.isArray(block.lines) && block.lines.length > 0 ? block.lines : [{ type: 'action', text: block.text }]
+        const isScene = block.type === 'scene_heading'
+        const isAct = block.type === 'heading'
         const blockAnnotations = annotations.filter((annotation) =>
           annotation.blockIndex === block.index
           || (annotation.blockHash !== undefined && annotation.blockHash !== '' && annotation.blockHash === block.hash),
@@ -1552,33 +1670,26 @@ window.__ModuleLoader__.load({
           'data-spm-block': block.index,
         },
           !inEditRange ? h('button', { type: 'button', className: 'spm-gutter', title: tr('btn.annotate'), onClick: () => startEdit(block) }, '＋') : null,
-          h('div', null, lines.map((line, lineIndex) => {
+          h('div', null, lineInfos.map((lineInfo, lineIndex) => {
+            const line = lineInfo.text
             const lineStart = lineOffset
             lineOffset += line.length + 1
-            const dialogue = dialogueLineParts(line)
-            const display = dialogue !== null ? `${dialogue.speaker}${dialogue.text}` : line
-            const speakerEnd = dialogue !== null ? lineStart + dialogue.speaker.length : lineStart
-            const speakerTouched = dialogue !== null && highlightRanges.some((range) => range.start < speakerEnd && range.end > lineStart)
-            if (dialogue !== null && !speakerTouched) {
-              const pieces = lineSegments(dialogue.text, speakerEnd, highlightRanges)
-              return h('div', { key: lineIndex, className: 'spm-line spm-line-dialogue' },
-                h('span', { key: 'speaker', className: 'spm-speaker' }, dialogue.speaker),
-                pieces.map((piece, position) => piece.highlight
+            const pieces = lineSegments(line, lineStart, highlightRanges)
+            const children = pieces.map((piece, position) => piece.highlight
+              ? h('mark', { key: `m${position}`, className: `spm-hl${piece.active ? ' spm-hl-active' : ''}` }, piece.text)
+              : piece.text)
+            if (block.inline === true && lineIndex === 0 && typeof block.inlineSpeaker === 'string') {
+              const speakerEnd = lineStart + block.inlineSpeaker.length
+              const inlineChildren = pieces.map((piece, position) => {
+                const content = piece.highlight
                   ? h('mark', { key: `m${position}`, className: `spm-hl${piece.active ? ' spm-hl-active' : ''}` }, piece.text)
-                  : piece.text),
-              )
+                  : piece.text
+                if (piece.start < speakerEnd) return h('span', { key: `s${position}`, className: 'spm-speaker' }, content)
+                return content
+              })
+              return h('div', { key: lineIndex, className: 'spm-line spm-line-dialogue' }, inlineChildren)
             }
-            const pieces = lineSegments(display, lineStart, highlightRanges)
-            const children = pieces.map((piece, position) => {
-              const content = piece.highlight
-                ? h('mark', { key: `m${position}`, className: `spm-hl${piece.active ? ' spm-hl-active' : ''}` }, piece.text)
-                : piece.text
-              if (dialogue !== null && piece.start < speakerEnd) {
-                return h('span', { key: `s${position}`, className: 'spm-speaker' }, content)
-              }
-              return content
-            })
-            return h('div', { key: lineIndex, className: dialogue !== null ? 'spm-line spm-line-dialogue' : blockLineClass(line) }, children)
+            return h('div', { key: lineIndex, className: screenplayLineClass(lineInfo.type) }, children)
           })),
           blockAnnotations.length > 0 ? h('div', { className: 'spm-notes' }, blockAnnotations.map((annotation) => (
             editing !== null && editing.id === annotation.id

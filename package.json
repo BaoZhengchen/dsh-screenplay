@@ -1,8 +1,11 @@
 {
   "name": "@local/dsh-screenplay",
-  "version": "0.2.10",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node test/screenplay-parser.test.mjs"
+  },
   "description": "Screenplay mode for DeepSeek Harness: annotate a screenplay in the right sidebar and hand the notes to the writing agent, with automatic revisions and rollback.",
   "license": "MIT",
   "keywords": [
