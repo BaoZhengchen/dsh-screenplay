@@ -1,5 +1,9 @@
 # 剧本模式（Screenplay Mode）
 
+[![CI](https://github.com/BaoZhengchen/dsh-screenplay/actions/workflows/ci.yml/badge.svg)](https://github.com/BaoZhengchen/dsh-screenplay/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/BaoZhengchen/dsh-screenplay?label=release)](https://github.com/BaoZhengchen/dsh-screenplay/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > 在 DeepSeek Harness 的右侧栏打开剧本，按段/按句批注，一键交给编剧 Agent 改稿；每轮改稿自动成版本，可对比、可回滚。
 
 **Screenplay mode** is a plugin bundle for [DeepSeek Harness](https://deepseek.com/harness/). It opens a screenplay in the right sidebar, lets you annotate paragraphs or selected sentences, hands the notes to a writing agent, and keeps every revision with diff and rollback.
@@ -28,6 +32,14 @@
 2. 在 Harness 会话里让 Agent 执行 `plugin_manager` 的 `install_bundle`，目标指向仓库绝对路径。
 3. 刷新 / 重载 Harness 界面；右侧栏的引导页会出现「剧本模式」卡片。
 
+### 从 Release 安装
+
+每个版本在 [Releases](https://github.com/BaoZhengchen/dsh-screenplay/releases) 提供源码快照与 `.tgz` 打包产物。
+
+- **推荐**：`git clone` 或下载对应 tag 的源码目录，用 `install_bundle` 指向目录（插件无构建步骤，直接可用）。
+- 也可下载 Release 中的 `.tgz`，交给支持本地安装包的 Harness 插件安装入口。
+- 版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
 > Desktop 下没有浏览器地址栏，插件改动通过 `plugin_manager remove_bundle → install_bundle` 热重载；个别情况下需要重启一次 Harness。
 
 ## 使用
@@ -49,6 +61,9 @@ dsh-screenplay/
   locale/               # 插件管理器中显示的名称与描述
   icon.svg
   DESIGN.md             # 详细设计（交互、版本模型、命令协议）
+  ROADMAP.md            # 待办与已完成优化项
+  CHANGELOG.md          # 版本变更
+  test/                 # 解析器 / 锚点 / 越界检测测试（node --test 风格，无依赖）
 ```
 
 ## 数据与隐私
