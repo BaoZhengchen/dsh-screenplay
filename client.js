@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.3.2'
+    const BUILD = '0.3.3'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -84,6 +84,7 @@ window.__ModuleLoader__.load({
       'typography.lineHeight': '行距（段内）',
       'typography.blockGap': '段距（段间）',
       'typography.hint': '行距控制同一段落内部的行间空白；段距控制段落与段落之间的空白。下面的预览会实时跟随。',
+      'group.annotationCount': '已批注 {n} 段',
       'typography.fontSize': '字号',
       'typography.reset': '恢复默认',
       'toc.title': '目录',
@@ -162,6 +163,7 @@ window.__ModuleLoader__.load({
       'typography.lineHeight': 'Line spacing (within)',
       'typography.blockGap': 'Paragraph spacing (between)',
       'typography.hint': 'Line spacing controls the gap between lines inside one paragraph; paragraph spacing adds space between paragraphs. The preview below updates live.',
+      'group.annotationCount': 'Annotated {n} blocks',
       'typography.fontSize': 'Font size',
       'typography.reset': 'Reset',
       'toc.title': 'Contents',
@@ -731,7 +733,8 @@ window.__ModuleLoader__.load({
 .spm-block-edit-range{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);border-left-color:color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent)}
 .spm-block-edit-range-first{border-top-left-radius:6px;border-top-right-radius:6px;padding-top:5px;margin-top:4px}
 .spm-block-edit-range-last{border-bottom-left-radius:6px;border-bottom-right-radius:6px;padding-bottom:5px;margin-bottom:6px}
-.spm-edit-group{margin:6px 0 10px;padding:4px 8px 8px;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);border:1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);border-left:3px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent);border-radius:10px}
+.spm-edit-group{position:relative;margin:6px 0 10px;padding:4px 8px 8px;background:color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent);border:1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);border-left:3px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent);border-radius:10px}
+.spm-group-label{position:absolute;top:-1px;right:12px;transform:translateY(-60%);font-size:10px;line-height:1;padding:3px 7px;border-radius:999px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);pointer-events:none;white-space:nowrap}
 .spm-edit-group .spm-editor{margin:8px 0 2px}
 .spm-annotation-group{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 4%, transparent);border-color:color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent);border-left-width:2px}
 @keyframes spm-flash{0%{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent)}70%{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent)}100%{background:transparent}}
@@ -1013,7 +1016,6 @@ window.__ModuleLoader__.load({
       const [typography, setTypography] = useState(loadTypography)
       const [bubble, setBubble] = useState(null)
       const [flash, setFlash] = useState(null)
-      const [activeAnnotationId, setActiveAnnotationId] = useState(null)
       const [showBackToTop, setShowBackToTop] = useState(false)
       const [hydratedFor, setHydratedFor] = useState('')
       const [preview, setPreview] = useState(null)
@@ -1040,7 +1042,6 @@ window.__ModuleLoader__.load({
       // A new document starts at the top with no transient highlight.
       useEffect(() => {
         setFlash(null)
-        setActiveAnnotationId(null)
         setShowBackToTop(false)
         const body = bodyRef.current
         if (body !== null && typeof body.scrollTo === 'function') body.scrollTo({ top: 0 })
@@ -1370,13 +1371,11 @@ window.__ModuleLoader__.load({
           segments: Array.isArray(editing.segments) && editing.segments.length > 0 ? editing.segments : undefined,
         }
         setAnnotations((prev) => [...prev.filter((annotation) => annotation.id !== next.id), next])
-        setActiveAnnotationId(next.level === 'sentence' ? next.id : null)
         closeEditor()
       }
 
       const removeAnnotation = (id) => {
         setAnnotations((prev) => prev.filter((annotation) => annotation.id !== id))
-        setActiveAnnotationId((prev) => (prev === id ? null : prev))
       }
 
       const collectSelectionSegments = (range) => {
@@ -1436,7 +1435,7 @@ window.__ModuleLoader__.load({
         const anchorBlock = blocks[anchorIndex]
         if (anchorBlock === undefined) return
         let quote = text.replace(/\s+/g, ' ').trim()
-        if (quote.length > 400) quote = `${quote.slice(0, 400)}…`
+        if (quote.length > 2000) quote = `${quote.slice(0, 2000)}…`
         const range = selection.getRangeAt(0)
         const startBlockElement = blockElementFor(range.startContainer)
         const endBlockElement = blockElementFor(range.endContainer)
@@ -1708,11 +1707,6 @@ window.__ModuleLoader__.load({
               : h('div', {
                   key: annotation.id !== undefined ? annotation.id : `${annotation.blockIndex}-${annotation.note.length}`,
                   className: 'spm-note',
-                  onClick: () => {
-                    const id = annotation.id !== undefined ? annotation.id : null
-                    if (id === null) return
-                    setActiveAnnotationId((prev) => (prev === id ? null : id))
-                  },
                 },
                   h('div', { className: 'spm-note-head' },
                     h('span', { className: 'spm-note-tag' }, annotation.tag !== undefined ? annotation.tag : '改稿'),
@@ -1751,29 +1745,56 @@ window.__ModuleLoader__.load({
           )
         }
         if (blocks.length === 0) return h('div', { className: 'spm-empty' }, tr('doc.empty'))
-        const editingStart = editing === null ? -1 : (Number.isInteger(editing.startBlockIndex) ? editing.startBlockIndex : editing.blockIndex)
-        const editingEnd = editing === null ? -1 : (Number.isInteger(editing.endBlockIndex) ? editing.endBlockIndex : editing.blockIndex)
-        const editingGroup = editing !== null && editing.level === 'sentence' && editingEnd > editingStart
-        let group = null
-        if (editingGroup) {
-          group = { start: editingStart, end: editingEnd, editing: true, key: 'edit' }
-        } else if (activeAnnotationId !== null) {
-          const activeAnnotation = annotations.find((annotation) =>
-            annotation !== null && typeof annotation === 'object' && annotation.id === activeAnnotationId && annotation.level === 'sentence')
-          if (activeAnnotation !== undefined && activeAnnotation !== null) {
-            const plan = planQuoteHighlights(blocks, activeAnnotation.quote)
+        const segmentRange = (segments) => {
+          if (!Array.isArray(segments)) return null
+          const indices = []
+          for (const segment of segments) {
+            if (segment !== null && typeof segment === 'object' && Number.isInteger(segment.blockIndex)) indices.push(segment.blockIndex)
+          }
+          if (indices.length < 2) return null
+          return { start: Math.min(...indices), end: Math.max(...indices) }
+        }
+        const ranges = []
+        if (editing !== null && editing.level === 'sentence') {
+          const start = Number.isInteger(editing.startBlockIndex) ? editing.startBlockIndex : editing.blockIndex
+          let end = Number.isInteger(editing.endBlockIndex) ? editing.endBlockIndex : start
+          const fromSegments = segmentRange(editing.segments)
+          if (fromSegments !== null && fromSegments.end > end) end = fromSegments.end
+          if (end > start) ranges.push({ start, end, editing: true, key: 'edit' })
+        }
+        for (const annotation of annotations) {
+          if (annotation === null || typeof annotation !== 'object' || annotation.level !== 'sentence') continue
+          let range = segmentRange(annotation.segments)
+          if (range === null) {
+            const plan = planQuoteHighlights(blocks, annotation.quote)
             if (plan.size > 1) {
               const indices = Array.from(plan.keys())
-              group = { start: Math.min(...indices), end: Math.max(...indices), editing: false, key: `annotation:${activeAnnotation.id}` }
+              range = { start: Math.min(...indices), end: Math.max(...indices) }
             }
           }
+          if (range !== null && range.end > range.start) {
+            ranges.push({ start: range.start, end: range.end, editing: false, key: `ann:${annotation.id}` })
+          }
         }
-        if (group === null) return blocks.map((block) => renderBlock(block))
+        ranges.sort((left, right) => left.start - right.start)
+        const groups = []
+        for (const range of ranges) {
+          const last = groups[groups.length - 1]
+          if (last !== undefined && range.start <= last.end + 1) {
+            last.end = Math.max(last.end, range.end)
+            last.editing = last.editing === true || range.editing === true
+            last.key = `${last.key}+${range.key}`
+          } else {
+            groups.push({ start: range.start, end: range.end, editing: range.editing === true, key: range.key })
+          }
+        }
+        if (groups.length === 0) return blocks.map((block) => renderBlock(block))
         const nodes = []
         let position = 0
         while (position < blocks.length) {
           const block = blocks[position]
-          if (block.index < group.start || block.index > group.end) {
+          const group = groups.find((candidate) => block.index >= candidate.start && block.index <= candidate.end)
+          if (group === undefined) {
             nodes.push(renderBlock(block))
             position += 1
             continue
@@ -1792,7 +1813,9 @@ window.__ModuleLoader__.load({
           nodes.push(h('div', {
             key: `spm-group:${group.key}`,
             className: `spm-edit-group${group.editing === true ? '' : ' spm-annotation-group'}`,
+            'data-spm-group': `${group.start}-${group.end}`,
           },
+            group.editing === true ? null : h('span', { className: 'spm-group-label' }, tr('group.annotationCount', { n: groupBlocks.length })),
             groupBlocks.map((inner) => renderBlock(inner, true)),
             group.editing === true ? renderEditor() : null,
           ))
@@ -2003,10 +2026,7 @@ window.__ModuleLoader__.load({
           className: 'spm-body',
           ref: bodyRef,
           onMouseUp: handleSelectionMouseUp,
-          onMouseDown: () => {
-            setBubble(null)
-            setActiveAnnotationId(null)
-          },
+          onMouseDown: () => setBubble(null),
           onScroll: (event) => {
             setBubble(null)
             const target = event.currentTarget
