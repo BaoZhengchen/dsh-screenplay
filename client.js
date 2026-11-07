@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.3.0'
+    const BUILD = '0.3.1'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -81,8 +81,9 @@ window.__ModuleLoader__.load({
       'toast.relocatedPartial': '批注已重新定位，{n} 条没匹配上，请手动检查',
       'toast.timeout': '等待超时，改稿可能仍在进行。稍后点刷新查看新版本。',
       'typography.title': '排版',
-      'typography.lineHeight': '行距',
-      'typography.blockGap': '段距',
+      'typography.lineHeight': '行距（段内）',
+      'typography.blockGap': '段距（段间）',
+      'typography.hint': '行距控制同一段落内部的行间空白；段距控制段落与段落之间的空白。下面的预览会实时跟随。',
       'typography.fontSize': '字号',
       'typography.reset': '恢复默认',
       'toc.title': '目录',
@@ -158,8 +159,9 @@ window.__ModuleLoader__.load({
       'toast.relocatedPartial': 'Re-anchored, but {n} notes found no match; please check them',
       'toast.timeout': 'Timed out waiting; the revision may still be running. Refresh later to check.',
       'typography.title': 'Typography',
-      'typography.lineHeight': 'Line height',
-      'typography.blockGap': 'Paragraph gap',
+      'typography.lineHeight': 'Line spacing (within)',
+      'typography.blockGap': 'Paragraph spacing (between)',
+      'typography.hint': 'Line spacing controls the gap between lines inside one paragraph; paragraph spacing adds space between paragraphs. The preview below updates live.',
       'typography.fontSize': 'Font size',
       'typography.reset': 'Reset',
       'toc.title': 'Contents',
@@ -670,8 +672,8 @@ window.__ModuleLoader__.load({
       const blockGap = Number(source.blockGap)
       const fontSize = Number(source.fontSize)
       return {
-        lineHeight: Number.isFinite(lineHeight) ? Math.min(2.6, Math.max(1.2, lineHeight)) : TYPOGRAPHY_DEFAULTS.lineHeight,
-        blockGap: Number.isFinite(blockGap) ? Math.min(40, Math.max(0, blockGap)) : TYPOGRAPHY_DEFAULTS.blockGap,
+        lineHeight: Number.isFinite(lineHeight) ? Math.min(2.4, Math.max(1.3, lineHeight)) : TYPOGRAPHY_DEFAULTS.lineHeight,
+        blockGap: Number.isFinite(blockGap) ? Math.min(60, Math.max(0, blockGap)) : TYPOGRAPHY_DEFAULTS.blockGap,
         fontSize: Number.isFinite(fontSize) ? Math.min(20, Math.max(11, fontSize)) : TYPOGRAPHY_DEFAULTS.fontSize,
       }
     }
@@ -789,9 +791,13 @@ window.__ModuleLoader__.load({
 .spm-toc-level1{font-weight:600}
 .spm-toc-level2{padding-left:24px;font-size:12px;color:var(--dsw-alias-label-secondary)}
 .spm-typography-row{display:flex;align-items:center;gap:10px;margin:12px 0}
-.spm-typography-label{font-size:12px;color:var(--dsw-alias-label-secondary);flex:none;width:48px}
+.spm-typography-label{font-size:12px;color:var(--dsw-alias-label-secondary);flex:none;width:88px}
 .spm-range{flex:1 1 auto;min-width:0;accent-color:var(--dsw-alias-brand-primary)}
 .spm-value{font-size:11px;color:var(--dsw-alias-label-secondary);min-width:42px;text-align:right;flex:none;font-variant-numeric:tabular-nums}
+.spm-typo-hint{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin:0 0 8px}
+.spm-typo-preview{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-base);max-height:210px;overflow:auto;margin-bottom:4px}
+.spm-typo-preview .spm-block{margin-bottom:var(--spm-block-gap,10px)}
+.spm-typo-preview .spm-block:last-child{margin-bottom:0}
 .spm-workbench{display:flex;flex-direction:column;gap:8px;height:100%;min-height:0}
 .spm-file-row{display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);cursor:pointer}
 .spm-file-row:hover{background:var(--dsw-alias-bg-layer-2)}
@@ -1898,8 +1904,29 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', className: 'spm-btn', onClick: () => setTypographyOpen(false) }, tr('btn.close')),
             ),
             h('div', { className: 'spm-dialog-body' },
-              row(tr('typography.lineHeight'), typography.lineHeight, 1.2, 2.6, 0.05, typography.lineHeight.toFixed(2), (event) => update({ lineHeight: Number(event.target.value) })),
-              row(tr('typography.blockGap'), typography.blockGap, 0, 40, 2, `${typography.blockGap}px`, (event) => update({ blockGap: Number(event.target.value) })),
+              h('div', { className: 'spm-typo-hint' }, tr('typography.hint')),
+              h('div', {
+                className: 'spm-typo-preview',
+                style: {
+                  '--spm-line-height': String(typography.lineHeight),
+                  '--spm-block-gap': `${typography.blockGap}px`,
+                  '--spm-font-size': `${typography.fontSize}px`,
+                },
+              },
+                h('div', { className: 'spm-block' },
+                  h('div', { className: 'spm-line spm-line-scene' }, '1. 内景 出租屋 - 夜'),
+                ),
+                h('div', { className: 'spm-block' },
+                  h('div', { className: 'spm-line spm-line-character' }, '林小满'),
+                  h('div', { className: 'spm-line spm-line-paren' }, '（低声）'),
+                  h('div', { className: 'spm-line spm-line-dialogue' }, '我们明天再谈。'),
+                ),
+                h('div', { className: 'spm-block' },
+                  h('div', { className: 'spm-line' }, '她关上门，没有回头。'),
+                ),
+              ),
+              row(tr('typography.lineHeight'), typography.lineHeight, 1.3, 2.4, 0.05, typography.lineHeight.toFixed(2), (event) => update({ lineHeight: Number(event.target.value) })),
+              row(tr('typography.blockGap'), typography.blockGap, 0, 56, 2, `${typography.blockGap}px`, (event) => update({ blockGap: Number(event.target.value) })),
               row(tr('typography.fontSize'), typography.fontSize, 11, 20, 0.5, `${typography.fontSize}px`, (event) => update({ fontSize: Number(event.target.value) })),
               h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '12px' } },
                 h('button', { type: 'button', className: 'spm-btn', onClick: () => setTypography(normalizeTypography({ lineHeight: 1.85, blockGap: 10, fontSize: 13.5 })) }, tr('typography.reset')),
