@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Screenplay mode",
+    "description": "Annotate a screenplay in the right sidebar, send the notes to the writing agent, and keep every revision with diff and rollback."
+  }
+}

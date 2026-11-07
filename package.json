@@ -1,0 +1,41 @@
+{
+  "name": "@local/dsh-screenplay",
+  "version": "0.2.10",
+  "private": true,
+  "type": "module",
+  "description": "Screenplay mode for DeepSeek Harness: annotate a screenplay in the right sidebar and hand the notes to the writing agent, with automatic revisions and rollback.",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "screenplay",
+    "screenwriting",
+    "annotation",
+    "plugin"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}

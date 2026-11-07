@@ -1,0 +1,5 @@
+# Screenplay mode bundle: one host row. The browser half is declared by
+# package.json `dsh.client` and loaded by the Web client module table.
+- insert:
+    - id: screenplay
+      name: '@local/dsh-screenplay'
