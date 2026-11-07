@@ -35,6 +35,8 @@ const SETTLE_DEBOUNCE_MS = 2500
 const FALLBACK_POLL_MS = 3000
 const SEND_COALESCE_MS = 5 * 60 * 1000
 const BUSY_TIMEOUT_MS = 10 * 60 * 1000
+/** A pending send revision older than this is treated as abandoned. */
+const PENDING_ABANDON_MS = 10 * 60 * 1000
 const TEMPLATE_NAME = '第一集.md'
 const TEMPLATE_BODY =
   '# 第一集\n\n（在这里写场景、动作与对白。段落之间空一行，方便在右栏按段批注。）\n'
@@ -249,6 +251,52 @@ export function apply(ctx) {
     return index.revisions.length === 0 ? undefined : index.revisions[index.revisions.length - 1]
   }
 
+  /** Mark every in-flight send revision as abandoned; returns how many changed. */
+  function abandonPending(index) {
+    if (index === null || typeof index !== 'object' || !Array.isArray(index.revisions)) return 0
+    let changed = 0
+    for (const revision of index.revisions) {
+      if (revision === null || typeof revision !== 'object') continue
+      if (revision.state !== 'pending') continue
+      revision.state = 'abandoned'
+      revision.abandonedAt = nowIso()
+      changed += 1
+    }
+    return changed
+  }
+
+  /**
+   * A turn that ends without touching the file can leave a `pending` revision
+   * behind forever. Orphaned pending revisions (anything but the current head)
+   * are always released; a pending head is released once it is clearly stale.
+   */
+  async function reconcilePending(doc, index, sidecar, policy) {
+    const head = lastRevision(index)
+    let changed = 0
+    if (Array.isArray(index.revisions)) {
+      for (const revision of index.revisions) {
+        if (revision === null || typeof revision !== 'object') continue
+        if (revision.state !== 'pending' || revision === head) continue
+        revision.state = 'abandoned'
+        revision.abandonedAt = nowIso()
+        changed += 1
+      }
+    }
+    if (head !== undefined && head !== null && head.state === 'pending') {
+      const startedAt = typeof head.time === 'string' ? Date.parse(head.time) : NaN
+      if (!Number.isFinite(startedAt) || Date.now() - startedAt >= PENDING_ABANDON_MS) {
+        head.state = 'abandoned'
+        head.abandonedAt = nowIso()
+        changed += 1
+      }
+    }
+    if (changed > 0) {
+      await saveIndex(sidecar, index, policy)
+      if (head === undefined || head === null || head.state !== 'pending') releaseBusy(doc.docRel)
+    }
+    return changed
+  }
+
   async function loadIndex(doc, text, version, policy) {
     const sidecar = sidecarOf(doc)
     const existing = await readSidecarJson(indexPathOf(sidecar))
@@ -364,7 +412,10 @@ export function apply(ctx) {
       const policy = policyFor(entry.agent)
 
       if (head.state === 'pending') {
-        if (hash === head.baseHash) return
+        if (hash === head.baseHash) {
+          await reconcilePending(entry.doc, index, sidecar, policy)
+          return
+        }
         head.resultVersion = info.version
         head.resultHash = hash
         head.state = 'applied'
@@ -512,6 +563,11 @@ export function apply(ctx) {
     const text = await ctx.fs.readText(doc.target)
     const policy = policyFor(agent)
     const { index, sidecar } = await loadIndex(doc, text, info.version, policy)
+    try {
+      await reconcilePending(doc, index, sidecar, policy)
+    } catch (error) {
+      ctx.logger?.warn?.('screenplay: could not reconcile a pending revision', error)
+    }
     const lastOpened = typeof index.lastOpenedAt === 'string' ? Date.parse(index.lastOpenedAt) : 0
     if (!Number.isFinite(lastOpened) || Date.now() - lastOpened > 30000) {
       index.lastOpenedAt = nowIso()
@@ -537,8 +593,10 @@ export function apply(ctx) {
       fail('E_STALE', '稿件已更新，请重新定位批注后再发送')
     }
     acquireBusy(agent, doc.docRel)
+    let created = null
     try {
       const { index, sidecar } = await loadIndex(doc, text, info.version, policy)
+      abandonPending(index)
       const baseHash = sha256(text)
       const seq = index.nextSeq
       const revision = {
@@ -554,6 +612,7 @@ export function apply(ctx) {
         annotationCount: annotations.length,
         state: 'pending',
       }
+      created = { index, sidecar, policy }
       await ensureSnapshot(sidecar, baseHash, text, policy)
       await writeSidecarJson(revisionPathOf(sidecar, revision.id), {
         doc: doc.docRel,
@@ -574,6 +633,16 @@ export function apply(ctx) {
       await ensureWatch(agent, doc)
       return { revision: revision.id, seq, state: 'pending' }
     } catch (error) {
+      if (created !== null) {
+        const changed = abandonPending(created.index)
+        if (changed > 0) {
+          try {
+            await saveIndex(created.sidecar, created.index, created.policy)
+          } catch (saveError) {
+            ctx.logger?.warn?.('screenplay: could not abandon a failed revision', saveError)
+          }
+        }
+      }
       releaseBusy(doc.docRel)
       throw error
     }
@@ -665,6 +734,19 @@ export function apply(ctx) {
     return { revision: revision.id, seq, restoredFrom: wanted.seq }
   }
 
+  async function cancelDoc(agent, payload) {
+    const doc = await resolveDoc(agent, payload)
+    const info = await ctx.fs.stat(doc.target)
+    if (info === undefined) fail('E_NOT_FOUND', '剧本文件不存在')
+    const text = await ctx.fs.readText(doc.target)
+    const policy = policyFor(agent)
+    const { index, sidecar } = await loadIndex(doc, text, info.version, policy)
+    const abandoned = abandonPending(index)
+    if (abandoned > 0) await saveIndex(sidecar, index, policy)
+    releaseBusy(doc.docRel)
+    return { abandoned, head: index.head ?? null }
+  }
+
   async function initDoc(agent) {
     const root = await workspaceRootOf(agent)
     const policy = policyFor(agent)
@@ -682,7 +764,7 @@ export function apply(ctx) {
   ctx.effect(
     () => ctx.commands.register({
     name: 'screenplay',
-    description: '剧本模式：打开剧本、按批注改稿、保存版本、恢复版本（供右栏剧本面板调用）',
+    description: '剧本模式：打开剧本、按批注改稿、保存版本、恢复版本、结束等待（供右栏剧本面板调用）',
     recordInput: false,
     handler: async ({ agent, rawInput }) => {
       ensureAgentScope(agent)
@@ -705,6 +787,9 @@ export function apply(ctx) {
           case 'restore':
             value = await restoreDoc(agent, decodePayload(argument))
             break
+          case 'cancel':
+            value = await cancelDoc(agent, decodePayload(argument))
+            break
           case 'init':
             value = await initDoc(agent)
             break
@@ -712,7 +797,7 @@ export function apply(ctx) {
             value = { ok: true, scriptDir: SCRIPT_DIR }
             break
           default:
-            fail('E_SYNTAX', `未知子命令「${sub || '(空)'}」，可用：open / send / snapshot / restore / init`)
+            fail('E_SYNTAX', `未知子命令「${sub || '(空)'}」，可用：open / send / snapshot / restore / cancel / init`)
         }
         return { kind: 'success', text: `OK ${JSON.stringify(value)}` }
       } catch (error) {

@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.3.4'
+    const BUILD = '0.3.5'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -60,6 +60,8 @@ window.__ModuleLoader__.load({
       'btn.backToTop': '回到顶部',
       'btn.send': '发送 {n} 条批注',
       'btn.sending': '发送中…',
+      'btn.cancelPending': '结束等待',
+      'versions.abandoned': '已结束',
       'btn.restore': '恢复此版本',
       'btn.view': '查看',
       'btn.diff': '对比上一版',
@@ -80,6 +82,7 @@ window.__ModuleLoader__.load({
       'toast.relocated': '批注已按最新稿重新定位',
       'toast.relocatedPartial': '批注已重新定位，{n} 条没匹配上，请手动检查',
       'toast.timeout': '等待超时，改稿可能仍在进行。稍后点刷新查看新版本。',
+      'toast.cancelled': '已结束等待，可以继续发送批注。',
       'typography.title': '排版',
       'typography.lineHeight': '行距（段内）',
       'typography.blockGap': '段距（段间）',
@@ -139,6 +142,8 @@ window.__ModuleLoader__.load({
       'btn.backToTop': 'Back to top',
       'btn.send': 'Send {n} notes',
       'btn.sending': 'Sending…',
+      'btn.cancelPending': 'Finish waiting',
+      'versions.abandoned': 'Abandoned',
       'btn.restore': 'Restore this version',
       'btn.view': 'View',
       'btn.diff': 'Diff previous',
@@ -159,6 +164,7 @@ window.__ModuleLoader__.load({
       'toast.relocated': 'Notes re-anchored to the latest draft',
       'toast.relocatedPartial': 'Re-anchored, but {n} notes found no match; please check them',
       'toast.timeout': 'Timed out waiting; the revision may still be running. Refresh later to check.',
+      'toast.cancelled': 'Stopped waiting; you can send annotations again.',
       'typography.title': 'Typography',
       'typography.lineHeight': 'Line spacing (within)',
       'typography.blockGap': 'Paragraph spacing (between)',
@@ -1234,17 +1240,22 @@ window.__ModuleLoader__.load({
         }
       }, [tab.visible, docPath, fetchIndex, loadDocument])
 
-      // Finish a pending revision once the host marks it applied.
+      // Finish (or release) a pending revision once the host settles it.
       useEffect(() => {
         const current = live.current.pending
         if (current === null || index.status !== 'ready' || index.data === null) return
         const revision = index.data.revisions.find((entry) => entry !== null && typeof entry === 'object' && entry.id === current.revision)
-        if (revision === undefined || revision.state !== 'applied') return
-        setPending(null)
-        setAnnotations([])
-        setBaseVersion(live.current.doc.version)
-        clearDraft(sessionId, docPath)
-        showToast(tr('toast.applied', { seq: revision.seq }))
+        if (revision === undefined) return
+        if (revision.state === 'applied') {
+          setPending(null)
+          setAnnotations([])
+          setBaseVersion(live.current.doc.version)
+          clearDraft(sessionId, docPath)
+          showToast(tr('toast.applied', { seq: revision.seq }))
+        } else if (revision.state === 'abandoned') {
+          setPending(null)
+          showToast(tr('toast.cancelled'))
+        }
       }, [index, sessionId, docPath, showToast, tr])
 
       // Bound the wait: on a very slow or failed turn the send button must not
@@ -1277,8 +1288,9 @@ window.__ModuleLoader__.load({
         return revisions.length === 0 ? null : revisions[revisions.length - 1]
       }, [index])
       const currentSeq = headRevision === null ? null : headRevision.seq
+      const headPending = headRevision !== null && headRevision.kind === 'send' && headRevision.state === 'pending'
       const isStale = annotations.length > 0 && baseVersion !== null && doc.version !== null && baseVersion !== doc.version
-      const pendingActive = pending !== null
+      const pendingActive = pending !== null || headPending
 
       const refreshAll = async () => {
         const controller = new AbortController()
@@ -1571,6 +1583,20 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const cancelPending = async () => {
+        if (!pendingActive) return
+        try {
+          const result = await io.current.runCommand(`/screenplay cancel ${b64urlEncode(JSON.stringify({ doc: docPath }))}`)
+          const parsed = parseExecution(result)
+          if (!parsed.ok) showToast(tr('toast.failed', { msg: parsed.text }))
+          else showToast(tr('toast.cancelled'))
+        } catch (error) {
+          showToast(tr('toast.failed', { msg: messageOf(error) }))
+        }
+        setPending(null)
+        await refreshAll()
+      }
+
       const openVersions = () => {
         setVersionsOpen(true)
         void loadIndex(new AbortController().signal)
@@ -1841,6 +1867,11 @@ window.__ModuleLoader__.load({
             ? tr('footer.pending')
             : annotations.length > 0 ? tr('footer.count', { n: annotations.length }) : tr('footer.none'),
         ),
+        pendingActive ? h('button', {
+          type: 'button',
+          className: 'spm-btn',
+          onClick: () => void cancelPending(),
+        }, tr('btn.cancelPending')) : null,
         h('button', {
           type: 'button',
           className: 'spm-btn spm-btn-primary',
@@ -1904,6 +1935,7 @@ window.__ModuleLoader__.load({
                       `${kindLabel(revision.kind)} · ${formatTime(revision.time)}`,
                       revision.annotationCount > 0 ? ` · ${tr('versions.annotations', { n: revision.annotationCount })}` : '',
                       revision.kind === 'send' && revision.state === 'pending' ? ` · ${tr('badge.pending')}` : '',
+                      revision.state === 'abandoned' ? ` · ${tr('versions.abandoned')}` : '',
                     ),
                     index.data != null && index.data.head === revision.id ? h('span', { className: 'spm-badge' }, tr('versions.current')) : null,
                   )),

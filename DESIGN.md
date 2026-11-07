@@ -510,4 +510,5 @@ M1 与本文档的已知差异：
 12. 主题（0.2.0）：面板颜色全部使用 `--dsw-alias-*` token，diff 底色改用 `color-mix()` 派生，跟随应用深/浅色切换，无写死颜色（仅阴影/遮罩使用半透明黑）。
 13. 插件热重载后旧 tab body 因 `keepMounted` 不会自动重挂；自动打开逻辑在重开前先关闭同内容 tab，用新代码新建 occurrence（0.2.1）。
 14. 剧本块模型 v2（0.3.0）：客户端 `parseScreenplay` 把剧本解析为八类块（`scene_heading/action/character/parenthetical/dialogue/transition/shot/note`，另加内部 `heading`），块仍是批注单位，行类型驱动渲染、目录与后续导出；解析器带 `#region screenplay-parser` 标记，`npm test` 从 client.js 提取该区运行。
+15. 卡住的 pending 修订（0.3.5）：Agent 没改文件时宿主 `pending` 修订会一直挂起。宿主现在在 `open` 时把非 head 的 pending 标为 `abandoned`、head pending 超 10 分钟也标 `abandoned` 并释放 busy；新增 `/screenplay cancel` 子命令；面板在 pending 时显示「结束等待」按钮，已 `abandoned` 的修订在版本列表里显示「已结束」。
 
