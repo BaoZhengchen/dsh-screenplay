@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.4.0'
+    const BUILD = '0.4.1'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -75,6 +75,10 @@ window.__ModuleLoader__.load({
       'editor.placeholder': '写批注：哪里要改、怎么改…',
       'editor.tag': '类型',
       'banner.stale': '稿件已更新，批注基于旧版。发送前请先重新定位。',
+      'banner.revisionOutOfScope': '本次改稿有 {n} 处越界改动（批注范围之外），请检查。',
+      'btn.viewReport': '查看差异',
+      'btn.rollbackRevision': '回滚本次改稿',
+      'btn.dismiss': '知道了',
       'toast.sent': '已发送 {n} 条批注，等待改稿…',
       'toast.applied': '改稿完成，已生成 v{seq}。',
       'toast.stale': '稿件已更新，请先重新定位批注',
@@ -85,6 +89,18 @@ window.__ModuleLoader__.load({
       'toast.cancelled': '已结束等待，可以继续发送批注。',
       'toast.reanchored': '稿件已更新，批注已自动重新定位。',
       'toast.reanchoredPartial': '稿件已更新，{n} 条批注没匹配上，请手动检查。',
+      'toast.revisionOutOfScope': '改稿完成，但检测到 {n} 处越界改动。',
+      'toast.appliedScoped': '改稿完成，已生成 v{seq}；改动都在批注范围内。',
+      'toast.rolledBack': '已回滚本次改稿。',
+      'toast.noRollbackBase': '没有可用于回滚的基础版本。',
+      'report.title': '改稿差异 · v{seq}',
+      'report.summary': '越界改动 {n} 处，批注范围内改动 {m} 处。',
+      'report.noIssues': '没有越界改动。',
+      'report.kind.modified': '越界修改',
+      'report.kind.inserted': '新增段落',
+      'report.kind.deleted': '删除段落',
+      'report.before': '原文：',
+      'report.after': '改后：',
       'typography.title': '排版',
       'typography.lineHeight': '行距（段内）',
       'typography.blockGap': '段距（段间）',
@@ -159,6 +175,10 @@ window.__ModuleLoader__.load({
       'editor.placeholder': 'What should change here, and how?',
       'editor.tag': 'Kind',
       'banner.stale': 'The script changed; these notes are based on an older draft. Re-anchor before sending.',
+      'banner.revisionOutOfScope': 'The revision changed {n} paragraph(s) outside the annotated range — please review.',
+      'btn.viewReport': 'View changes',
+      'btn.rollbackRevision': 'Roll back this revision',
+      'btn.dismiss': 'Dismiss',
       'toast.sent': 'Sent {n} notes; waiting for the revision…',
       'toast.applied': 'Revision finished as v{seq}.',
       'toast.stale': 'The script changed; re-anchor the notes first',
@@ -169,6 +189,18 @@ window.__ModuleLoader__.load({
       'toast.cancelled': 'Stopped waiting; you can send annotations again.',
       'toast.reanchored': 'The script changed; notes were re-anchored automatically.',
       'toast.reanchoredPartial': 'The script changed; {n} notes found no match — please check them.',
+      'toast.revisionOutOfScope': 'Revision finished, but {n} change(s) outside the annotated range were detected.',
+      'toast.appliedScoped': 'Revision finished as v{seq}; all changes stayed inside the annotated range.',
+      'toast.rolledBack': 'Rolled back this revision.',
+      'toast.noRollbackBase': 'No base version to roll back to.',
+      'report.title': 'Revision diff · v{seq}',
+      'report.summary': '{n} change(s) outside the annotated range; {m} change(s) inside.',
+      'report.noIssues': 'No out-of-scope changes.',
+      'report.kind.modified': 'Out-of-scope edit',
+      'report.kind.inserted': 'Paragraph added',
+      'report.kind.deleted': 'Paragraph deleted',
+      'report.before': 'Before: ',
+      'report.after': 'After: ',
       'typography.title': 'Typography',
       'typography.lineHeight': 'Line spacing (within)',
       'typography.blockGap': 'Paragraph spacing (between)',
@@ -608,6 +640,146 @@ window.__ModuleLoader__.load({
     }
     // #endregion screenplay-anchor
 
+    // ── revision scope diff (P0-3) ────────────────────────────────────────
+    // #region screenplay-diff
+    // Compare the draft an annotation batch was sent against with the revision
+    // the agent produced. Annotations cover base block indexes; anything the
+    // agent changed outside that coverage is reported as out-of-scope.
+
+    function alignScreenplayBlocks(baseBlocks, newBlocks) {
+      const n = baseBlocks.length
+      const m = newBlocks.length
+      const pairs = []
+      const gaps = []
+      if (n * m > 4000000) {
+        // Very long scripts: position-wise fallback keeps the panel responsive.
+        for (let k = 0; k < Math.max(n, m); k += 1) {
+          if (k < n && k < m && baseBlocks[k].hash === newBlocks[k].hash) pairs.push([k, k])
+          else gaps.push({ baseGap: k < n ? [k] : [], newGap: k < m ? [k] : [], beforeBase: k - 1, afterBase: k })
+        }
+        return { pairs, gaps, n, m }
+      }
+      const baseHashes = baseBlocks.map((block) => block.hash)
+      const newHashes = newBlocks.map((block) => block.hash)
+      const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1))
+      for (let i = n - 1; i >= 0; i -= 1) {
+        const row = dp[i]
+        const nextRow = dp[i + 1]
+        const baseHash = baseHashes[i]
+        for (let j = m - 1; j >= 0; j -= 1) {
+          row[j] = baseHash === newHashes[j] ? nextRow[j + 1] + 1 : Math.max(nextRow[j], row[j + 1])
+        }
+      }
+      let i = 0
+      let j = 0
+      let previousBase = -1
+      let previousNew = -1
+      const flushGap = (nextBase, nextNew) => {
+        const baseGap = []
+        for (let k = previousBase + 1; k < nextBase; k += 1) baseGap.push(k)
+        const newGap = []
+        for (let k = previousNew + 1; k < nextNew; k += 1) newGap.push(k)
+        if (baseGap.length > 0 || newGap.length > 0) gaps.push({ baseGap, newGap, beforeBase: previousBase, afterBase: nextBase < n ? nextBase : null })
+      }
+      while (i < n && j < m) {
+        if (baseHashes[i] === newHashes[j]) {
+          flushGap(i, j)
+          pairs.push([i, j])
+          previousBase = i
+          previousNew = j
+          i += 1
+          j += 1
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          i += 1
+        } else {
+          j += 1
+        }
+      }
+      flushGap(n, m)
+      return { pairs, gaps, n, m }
+    }
+
+    function annotationCoverage(annotations) {
+      const coverage = new Map()
+      const add = (index, tag) => {
+        if (!Number.isInteger(index) || index < 0) return
+        if (!coverage.has(index)) coverage.set(index, new Set())
+        if (typeof tag === 'string' && tag !== '') coverage.get(index).add(tag)
+      }
+      for (const annotation of annotations === undefined || annotations === null ? [] : annotations) {
+        if (annotation === null || typeof annotation !== 'object') continue
+        const tag = typeof annotation.tag === 'string' ? annotation.tag : ''
+        if (annotation.level === 'sentence' && Array.isArray(annotation.segments)) {
+          for (const segment of annotation.segments) {
+            if (segment !== null && typeof segment === 'object') add(segment.blockIndex, tag)
+          }
+        } else {
+          add(annotation.blockIndex, tag)
+        }
+      }
+      return coverage
+    }
+
+    /**
+     * Evaluate one revision against the annotation coverage of its base draft.
+     * Returns out-of-scope changes (modified / inserted / deleted paragraphs)
+     * plus the in-scope change count.
+     */
+    function evaluateRevisionScope(baseBlocks, newBlocks, annotations) {
+      const alignment = alignScreenplayBlocks(baseBlocks, newBlocks)
+      const coverage = annotationCoverage(annotations)
+      const covered = (index) => coverage.has(index)
+      const tagged = (index, tag) => {
+        const tags = coverage.get(index)
+        return tags !== undefined && tags.has(tag)
+      }
+      const outOfScope = []
+      let inScope = 0
+      for (const gap of alignment.gaps) {
+        const baseGap = gap.baseGap
+        const newGap = gap.newGap
+        const paired = Math.min(baseGap.length, newGap.length)
+        for (let k = 0; k < paired; k += 1) {
+          const baseIndex = baseGap[k]
+          if (covered(baseIndex) || tagged(baseIndex, '删戏')) {
+            inScope += 1
+            continue
+          }
+          outOfScope.push({ kind: 'modified', baseIndex, before: baseBlocks[baseIndex].text, after: newBlocks[newGap[k]].text })
+        }
+        if (baseGap.length > newGap.length) {
+          for (let k = paired; k < baseGap.length; k += 1) {
+            const baseIndex = baseGap[k]
+            if (tagged(baseIndex, '删戏')) {
+              inScope += 1
+              continue
+            }
+            outOfScope.push({ kind: 'deleted', baseIndex, before: baseBlocks[baseIndex].text })
+          }
+        } else if (newGap.length > baseGap.length) {
+          const insertionAllowed = (gap.beforeBase !== null && tagged(gap.beforeBase, '加戏'))
+            || (gap.afterBase !== null && tagged(gap.afterBase, '加戏'))
+          for (let k = paired; k < newGap.length; k += 1) {
+            if (insertionAllowed) {
+              inScope += 1
+              continue
+            }
+            outOfScope.push({ kind: 'inserted', after: newBlocks[newGap[k]].text })
+          }
+        }
+      }
+      return {
+        outOfScope,
+        inScope,
+        baseCount: alignment.n,
+        newCount: alignment.m,
+        modified: outOfScope.filter((change) => change.kind === 'modified').length,
+        inserted: outOfScope.filter((change) => change.kind === 'inserted').length,
+        deleted: outOfScope.filter((change) => change.kind === 'deleted').length,
+      }
+    }
+    // #endregion screenplay-diff
+
     function splitBlocks(text) {
       return parseScreenplay(text)
     }
@@ -1009,6 +1181,11 @@ window.__ModuleLoader__.load({
 .spm-typography-label{font-size:12px;color:var(--dsw-alias-label-secondary);flex:none;width:88px}
 .spm-range{flex:1 1 auto;min-width:0;accent-color:var(--dsw-alias-brand-primary)}
 .spm-value{font-size:11px;color:var(--dsw-alias-label-secondary);min-width:42px;text-align:right;flex:none;font-variant-numeric:tabular-nums}
+.spm-report-list{display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto}
+.spm-report-row{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-2)}
+.spm-report-kind{font-size:11px;font-weight:600;color:var(--dsw-alias-state-warn-primary);margin-bottom:4px}
+.spm-report-before,.spm-report-after{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
+.spm-report-after{color:var(--dsw-alias-label-primary)}
 .spm-typo-hint{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);margin:0 0 8px}
 .spm-typo-preview{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-base);max-height:210px;overflow:auto;margin-bottom:4px}
 .spm-typo-preview .spm-block{margin-bottom:var(--spm-block-gap,10px)}
@@ -1230,6 +1407,8 @@ window.__ModuleLoader__.load({
       const [showBackToTop, setShowBackToTop] = useState(false)
       const [hydratedFor, setHydratedFor] = useState('')
       const [preview, setPreview] = useState(null)
+      const [revisionReport, setRevisionReport] = useState(null)
+      const [reportOpen, setReportOpen] = useState(false)
 
       const live = useRef({})
       live.current = { doc, annotations, baseVersion, pending, hydratedFor }
@@ -1255,6 +1434,8 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         setFlash(null)
         setShowBackToTop(false)
+        setRevisionReport(null)
+        setReportOpen(false)
         const body = bodyRef.current
         if (body !== null && typeof body.scrollTo === 'function') body.scrollTo({ top: 0 })
       }, [docPath])
@@ -1454,10 +1635,7 @@ window.__ModuleLoader__.load({
         if (revision === undefined) return
         if (revision.state === 'applied') {
           setPending(null)
-          setAnnotations([])
-          setBaseVersion(live.current.doc.version)
-          clearDraft(sessionId, docPath)
-          showToast(tr('toast.applied', { seq: revision.seq }))
+          void finishRevision(current, revision)
         } else if (revision.state === 'abandoned') {
           setPending(null)
           showToast(tr('toast.cancelled'))
@@ -1744,6 +1922,57 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // After an applied revision: reload the draft, diff it against the text the
+      // annotations were written on, and report edits outside the annotated range.
+      const finishRevision = async (current, revision) => {
+        try {
+          const loaded = await io.current.readDoc(docPath)
+          const baseBlocks = splitBlocks(typeof current.baseText === 'string' ? current.baseText : '')
+          const nextBlocks = splitBlocks(loaded.text)
+          const scope = evaluateRevisionScope(baseBlocks, nextBlocks, Array.isArray(current.annotations) ? current.annotations : [])
+          applyLoadedDoc(loaded)
+          setBaseVersion(loaded.version ?? null)
+          setAnnotations([])
+          clearDraft(sessionId, docPath)
+          setRevisionReport(Object.assign({
+            seq: revision.seq,
+            baseRevision: typeof current.baseRevision === 'string' ? current.baseRevision : null,
+            baseSeq: Number.isInteger(current.baseSeq) ? current.baseSeq : null,
+            at: Date.now(),
+          }, scope))
+          setReportOpen(scope.outOfScope.length > 0)
+          if (scope.outOfScope.length > 0) {
+            showToast(tr('toast.revisionOutOfScope', { n: scope.outOfScope.length }))
+          } else {
+            showToast(tr('toast.appliedScoped', { seq: revision.seq }))
+          }
+        } catch (error) {
+          showToast(tr('toast.failed', { msg: messageOf(error) }))
+        }
+      }
+
+      const rollbackRevision = async () => {
+        const report = revisionReport
+        if (report === null || typeof report.baseRevision !== 'string' || report.baseRevision === '') {
+          showToast(tr('toast.noRollbackBase'))
+          return
+        }
+        try {
+          const result = await io.current.runCommand(`/screenplay restore ${b64urlEncode(JSON.stringify({ doc: docPath, revision: report.baseRevision }))}`)
+          const parsed = parseExecution(result)
+          if (!parsed.ok) {
+            showToast(tr('toast.failed', { msg: parsed.text }))
+            return
+          }
+          setRevisionReport(null)
+          setReportOpen(false)
+          await refreshAll()
+          showToast(tr('toast.rolledBack'))
+        } catch (error) {
+          showToast(tr('toast.failed', { msg: messageOf(error) }))
+        }
+      }
+
       const send = async () => {
         if (sending || pendingActive || annotations.length === 0) return
         if (isStale) {
@@ -1751,6 +1980,8 @@ window.__ModuleLoader__.load({
           return
         }
         setSending(true)
+        setRevisionReport(null)
+        setReportOpen(false)
         try {
           const payload = {
             doc: docPath,
@@ -1777,7 +2008,17 @@ window.__ModuleLoader__.load({
             return
           }
           const value = parsed.value !== null && typeof parsed.value === 'object' ? parsed.value : {}
-          setPending({ revision: value.revision, seq: value.seq, at: Date.now() })
+          setPending({
+            revision: value.revision,
+            seq: value.seq,
+            at: Date.now(),
+            baseText: doc.text,
+            baseRevision: headRevision !== null ? headRevision.id : null,
+            baseSeq: headRevision !== null ? headRevision.seq : null,
+            annotations: annotations.map((annotation) => Object.assign({}, annotation, {
+              segments: Array.isArray(annotation.segments) ? annotation.segments.map((segment) => Object.assign({}, segment)) : undefined,
+            })),
+          })
           showToast(tr('toast.sent', { n: annotations.length }))
         } catch (error) {
           showToast(tr('toast.failed', { msg: messageOf(error) }))
@@ -2179,6 +2420,45 @@ window.__ModuleLoader__.load({
         )
       }
 
+      const renderRevisionReport = () => {
+        if (!reportOpen || revisionReport === null) return null
+        const report = revisionReport
+        const changes = report.outOfScope
+        const kindLabel = (kind) => {
+          const key = `report.kind.${kind}`
+          const label = tRef.current(key)
+          return label === key ? kind : label
+        }
+        return h('div', { className: 'spm-overlay', onClick: () => setReportOpen(false) },
+          h('div', { className: 'spm-dialog', onClick: (event) => event.stopPropagation() },
+            h('div', { className: 'spm-dialog-head' },
+              h('span', { className: 'spm-dialog-title' }, tr('report.title', { seq: report.seq })),
+              h('div', { style: { flex: '1 1 auto' } }),
+              h('button', { type: 'button', className: 'spm-btn', onClick: () => setReportOpen(false) }, tr('btn.close')),
+            ),
+            h('div', { className: 'spm-dialog-body' },
+              h('div', { className: 'spm-hint', style: { marginBottom: '10px' } },
+                changes.length > 0
+                  ? tr('report.summary', { n: changes.length, m: report.inScope })
+                  : tr('report.noIssues'),
+              ),
+              changes.length > 0 ? h('div', { className: 'spm-report-list' }, changes.map((change, index) => h('div', {
+                key: `report:${index}`,
+                className: 'spm-report-row',
+              },
+                h('div', { className: 'spm-report-kind' }, kindLabel(change.kind)),
+                typeof change.before === 'string' ? h('div', { className: 'spm-report-before' }, `${tr('report.before')}${truncateText(change.before, 180)}`) : null,
+                typeof change.after === 'string' ? h('div', { className: 'spm-report-after' }, `${tr('report.after')}${truncateText(change.after, 180)}`) : null,
+              ))) : null,
+              changes.length > 0 ? h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' } },
+                h('button', { type: 'button', className: 'spm-btn', onClick: () => setReportOpen(false) }, tr('btn.close')),
+                h('button', { type: 'button', className: 'spm-btn spm-btn-primary', onClick: () => void rollbackRevision() }, tr('btn.rollbackRevision')),
+              ) : null,
+            ),
+          ),
+        )
+      }
+
       const renderTypography = () => {
         if (!typographyOpen) return null
         const update = (patch) => setTypography((prev) => normalizeTypography(Object.assign({}, prev, patch)))
@@ -2268,6 +2548,12 @@ window.__ModuleLoader__.load({
           h('span', { className: 'spm-banner-text' }, tr('banner.stale')),
           h('button', { type: 'button', className: 'spm-btn', onClick: () => setStaleOpen(true) }, tr('btn.relocate')),
         ) : null,
+        revisionReport !== null && revisionReport.outOfScope.length > 0 && !pendingActive ? h('div', { className: 'spm-banner' },
+          h('span', { className: 'spm-banner-text' }, tr('banner.revisionOutOfScope', { n: revisionReport.outOfScope.length })),
+          h('button', { type: 'button', className: 'spm-btn', onClick: () => setReportOpen(true) }, tr('btn.viewReport')),
+          h('button', { type: 'button', className: 'spm-btn', onClick: () => void rollbackRevision() }, tr('btn.rollbackRevision')),
+          h('button', { type: 'button', className: 'spm-btn', onClick: () => setRevisionReport(null) }, tr('btn.dismiss')),
+        ) : null,
         h('div', {
           className: 'spm-body',
           ref: bodyRef,
@@ -2303,6 +2589,7 @@ window.__ModuleLoader__.load({
         renderToc(),
         renderTypography(),
         renderStale(),
+        renderRevisionReport(),
       )
     }
     // ── plugin body ────────────────────────────────────────────────────────

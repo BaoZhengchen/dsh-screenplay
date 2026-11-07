@@ -512,4 +512,5 @@ M1 与本文档的已知差异：
 14. 剧本块模型 v2（0.3.0）：客户端 `parseScreenplay` 把剧本解析为八类块（`scene_heading/action/character/parenthetical/dialogue/transition/shot/note`，另加内部 `heading`），块仍是批注单位，行类型驱动渲染、目录与后续导出；解析器带 `#region screenplay-parser` 标记，`npm test` 从 client.js 提取该区运行。
 15. 卡住的 pending 修订（0.3.5）：Agent 没改文件时宿主 `pending` 修订会一直挂起。宿主现在在 `open` 时把非 head 的 pending 标为 `abandoned`、head pending 超 10 分钟也标 `abandoned` 并释放 busy；新增 `/screenplay cancel` 子命令；面板在 pending 时显示「结束等待」按钮，已 `abandoned` 的修订在版本列表里显示「已结束」。
 16. 锚点 v2（0.4.0）：批注带 `{blockHash, contextSig, segments[]}`（`contextSig` = FNV-1a(前段+`\0`+本段+`\0`+后段)）。版本变化后客户端自动重锚定：签名命中优先，其次唯一哈希，再唯一上下文，最后唯一引文；同文重复段落按签名消歧；歧义或文本被改则标 `stale` 并保留横幅提示。旧批注无 anchor 时按哈希/引文迁移。
+17. 改稿安全网（0.4.1）：发送时客户端把 base 正文与批注快照存进 pending；修订 applied 后重新读取正文，用块级 LCS 对齐 base 与新稿，按批注覆盖的块号判定越界修改/新增/删除（`删戏` 允许删、`加戏` 允许相邻新增）。越界时显示横幅 + 差异弹窗，可一键 `restore` 回发送前版本；发送消息同时给模型加硬约束（不增删段落、未批注段落逐字保留、字数 ±50%）。
 
