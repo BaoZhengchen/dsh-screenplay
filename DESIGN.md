@@ -511,4 +511,5 @@ M1 与本文档的已知差异：
 13. 插件热重载后旧 tab body 因 `keepMounted` 不会自动重挂；自动打开逻辑在重开前先关闭同内容 tab，用新代码新建 occurrence（0.2.1）。
 14. 剧本块模型 v2（0.3.0）：客户端 `parseScreenplay` 把剧本解析为八类块（`scene_heading/action/character/parenthetical/dialogue/transition/shot/note`，另加内部 `heading`），块仍是批注单位，行类型驱动渲染、目录与后续导出；解析器带 `#region screenplay-parser` 标记，`npm test` 从 client.js 提取该区运行。
 15. 卡住的 pending 修订（0.3.5）：Agent 没改文件时宿主 `pending` 修订会一直挂起。宿主现在在 `open` 时把非 head 的 pending 标为 `abandoned`、head pending 超 10 分钟也标 `abandoned` 并释放 busy；新增 `/screenplay cancel` 子命令；面板在 pending 时显示「结束等待」按钮，已 `abandoned` 的修订在版本列表里显示「已结束」。
+16. 锚点 v2（0.4.0）：批注带 `{blockHash, contextSig, segments[]}`（`contextSig` = FNV-1a(前段+`\0`+本段+`\0`+后段)）。版本变化后客户端自动重锚定：签名命中优先，其次唯一哈希，再唯一上下文，最后唯一引文；同文重复段落按签名消歧；歧义或文本被改则标 `stale` 并保留横幅提示。旧批注无 anchor 时按哈希/引文迁移。
 

@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.3.5'
+    const BUILD = '0.4.0'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -83,6 +83,8 @@ window.__ModuleLoader__.load({
       'toast.relocatedPartial': '批注已重新定位，{n} 条没匹配上，请手动检查',
       'toast.timeout': '等待超时，改稿可能仍在进行。稍后点刷新查看新版本。',
       'toast.cancelled': '已结束等待，可以继续发送批注。',
+      'toast.reanchored': '稿件已更新，批注已自动重新定位。',
+      'toast.reanchoredPartial': '稿件已更新，{n} 条批注没匹配上，请手动检查。',
       'typography.title': '排版',
       'typography.lineHeight': '行距（段内）',
       'typography.blockGap': '段距（段间）',
@@ -165,6 +167,8 @@ window.__ModuleLoader__.load({
       'toast.relocatedPartial': 'Re-anchored, but {n} notes found no match; please check them',
       'toast.timeout': 'Timed out waiting; the revision may still be running. Refresh later to check.',
       'toast.cancelled': 'Stopped waiting; you can send annotations again.',
+      'toast.reanchored': 'The script changed; notes were re-anchored automatically.',
+      'toast.reanchoredPartial': 'The script changed; {n} notes found no match — please check them.',
       'typography.title': 'Typography',
       'typography.lineHeight': 'Line spacing (within)',
       'typography.blockGap': 'Paragraph spacing (between)',
@@ -402,6 +406,207 @@ window.__ModuleLoader__.load({
       return blocks
     }
     // #endregion screenplay-parser
+
+    // ── annotation anchors v2 (P0-2) ──────────────────────────────────────
+    // #region screenplay-anchor
+    // An annotation anchor is a versioned, content-signed address:
+    //   block:   { v: 2, blockIndex, blockHash, contextSig }
+    //   sentence:{ ...anchor, segments: [{ blockIndex, blockHash, contextSig, text }] }
+    // contextSig hashes (previous + self + next) so a paragraph that merely moved
+    // is distinguished from a different paragraph with identical text. Re-anchor
+    // is conservative: index+hash+signature → hash → signature → unique quote;
+    // anything ambiguous is marked stale instead of silently mis-anchored.
+
+    function blockContextSig(blocks, index) {
+      if (!Array.isArray(blocks) || index < 0 || index >= blocks.length) return ''
+      const previous = index > 0 ? blocks[index - 1].text : ''
+      const self = blocks[index].text
+      const next = index + 1 < blocks.length ? blocks[index + 1].text : ''
+      return fnv1a(`${previous}\u0000${self}\u0000${next}`)
+    }
+
+    function buildAnchor(blocks, blockIndex, level, segments) {
+      if (!Array.isArray(blocks) || blockIndex < 0 || blockIndex >= blocks.length) return null
+      const block = blocks[blockIndex]
+      const anchor = { v: 2, blockIndex, blockHash: block.hash, contextSig: blockContextSig(blocks, blockIndex) }
+      if (level === 'sentence' && Array.isArray(segments) && segments.length > 0) {
+        anchor.segments = segments.map((segment) => {
+          const index = segment !== null && typeof segment === 'object' && Number.isInteger(segment.blockIndex) ? segment.blockIndex : -1
+          const segBlock = index >= 0 && index < blocks.length ? blocks[index] : undefined
+          return {
+            blockIndex: index,
+            blockHash: segBlock !== undefined ? segBlock.hash : (typeof segment.blockHash === 'string' ? segment.blockHash : ''),
+            contextSig: segBlock !== undefined ? blockContextSig(blocks, index) : '',
+            text: typeof segment.text === 'string' ? segment.text : '',
+          }
+        })
+      }
+      return anchor
+    }
+
+    function findBlockByHash(blocks, hash) {
+      if (typeof hash !== 'string' || hash === '') return null
+      let found = null
+      for (const block of blocks) {
+        if (block.hash !== hash) continue
+        if (found !== null) return null
+        found = block
+      }
+      return found
+    }
+
+    function countBlocksByHash(blocks, hash) {
+      if (typeof hash !== 'string' || hash === '') return 0
+      let count = 0
+      for (const block of blocks) if (block.hash === hash) count += 1
+      return count
+    }
+
+    function findBlockByContext(blocks, sig, needle) {
+      if (typeof sig !== 'string' || sig === '') return null
+      const compactNeedle = typeof needle === 'string' ? needle.replace(/\s+/g, '').slice(0, 12) : ''
+      let found = null
+      for (let index = 0; index < blocks.length; index += 1) {
+        if (blockContextSig(blocks, index) !== sig) continue
+        if (compactNeedle !== '' && !blocks[index].text.replace(/\s+/g, '').includes(compactNeedle)) continue
+        if (found !== null) return null
+        found = blocks[index]
+      }
+      return found
+    }
+
+    function findBlockByQuote(blocks, quote) {
+      const needle = typeof quote === 'string' ? quote.replace(/\s+/g, '').slice(0, 16) : ''
+      if (needle === '') return null
+      let found = null
+      for (const block of blocks) {
+        if (!block.text.replace(/\s+/g, '').includes(needle)) continue
+        if (found !== null) return null
+        found = block
+      }
+      return found
+    }
+
+    /** Resolve one annotation's block anchor against the current blocks. */
+    function resolveBlockAnchor(blocks, annotation) {
+      const anchor = annotation !== null && typeof annotation === 'object' && annotation.anchor !== null && typeof annotation.anchor === 'object' ? annotation.anchor : undefined
+      const quote = typeof annotation.quote === 'string' ? annotation.quote : ''
+      const expectedHash = anchor !== undefined && typeof anchor.blockHash === 'string' ? anchor.blockHash : annotation.blockHash
+      const expectedSig = anchor !== undefined && typeof anchor.contextSig === 'string' ? anchor.contextSig : ''
+      const ambiguousHash = countBlocksByHash(blocks, expectedHash) > 1
+      const hintIndex = Number.isInteger(annotation.blockIndex) ? annotation.blockIndex : -1
+      const hint = hintIndex >= 0 && hintIndex < blocks.length ? blocks[hintIndex] : null
+      if (hint !== null) {
+        // A content signature match is the strongest signal: it proves the
+        // same neighbours and the same text sit at this index.
+        if (expectedSig !== '' && expectedSig === blockContextSig(blocks, hintIndex)) return { block: hint, stale: false }
+        // A content-hash match is acceptable only when the hash is unique.
+        if (!ambiguousHash && typeof expectedHash === 'string' && expectedHash !== '' && expectedHash === hint.hash) return { block: hint, stale: false }
+      }
+      const byHash = findBlockByHash(blocks, expectedHash)
+      if (byHash !== null) return { block: byHash, stale: false }
+      const byContext = findBlockByContext(blocks, expectedSig, quote)
+      if (byContext !== null) return { block: byContext, stale: false }
+      const byQuote = findBlockByQuote(blocks, quote)
+      if (byQuote !== null) return { block: byQuote, stale: false }
+      return { block: hint, stale: true }
+    }
+
+    /** Re-resolve the per-block segments of a sentence annotation. */
+    function resolveSegmentAnchors(blocks, annotation) {
+      if (!Array.isArray(annotation.segments)) return null
+      const anchorSegments = annotation.anchor !== null && typeof annotation.anchor === 'object' && Array.isArray(annotation.anchor.segments)
+        ? annotation.anchor.segments
+        : []
+      let stale = false
+      const segments = annotation.segments.map((segment, position) => {
+        const meta = position < anchorSegments.length && anchorSegments[position] !== null && typeof anchorSegments[position] === 'object' ? anchorSegments[position] : {}
+        const text = typeof segment.text === 'string' ? segment.text : (typeof meta.text === 'string' ? meta.text : '')
+        const expectedHash = typeof meta.blockHash === 'string' && meta.blockHash !== '' ? meta.blockHash : segment.blockHash
+        const expectedSig = typeof meta.contextSig === 'string' ? meta.contextSig : ''
+        const ambiguousHash = countBlocksByHash(blocks, expectedHash) > 1
+        const hintIndex = Number.isInteger(segment.blockIndex) ? segment.blockIndex : -1
+        const hint = hintIndex >= 0 && hintIndex < blocks.length ? blocks[hintIndex] : null
+        let block = null
+        if (hint !== null) {
+          if (expectedSig !== '' && expectedSig === blockContextSig(blocks, hintIndex)) block = hint
+          else if (!ambiguousHash && typeof expectedHash === 'string' && expectedHash !== '' && expectedHash === hint.hash) block = hint
+        }
+        if (block === null) block = findBlockByHash(blocks, expectedHash)
+        if (block === null && expectedSig !== '') block = findBlockByContext(blocks, expectedSig, text)
+        if (block === null) {
+          const needle = text.replace(/\s+/g, '').slice(0, 12)
+          let found = null
+          if (needle !== '') {
+            for (const candidate of blocks) {
+              if (!candidate.text.replace(/\s+/g, '').includes(needle)) continue
+              if (found !== null) { found = null; break }
+              found = candidate
+            }
+          }
+          block = found
+        }
+        if (block === null) {
+          stale = true
+          return Object.assign({}, segment, { unmatched: true })
+        }
+        return Object.assign({}, segment, { blockIndex: block.index, blockHash: block.hash, unmatched: false })
+      })
+      return { segments, stale }
+    }
+
+    /**
+     * Re-anchor every annotation against freshly parsed blocks. Pure; returns
+     * the resolved annotations plus counts so the caller can toast/flag.
+     */
+    function reanchorAnnotations(blocks, annotations) {
+      let changed = 0
+      let stale = 0
+      const resolved = []
+      for (const annotation of annotations) {
+        if (annotation === null || typeof annotation !== 'object') {
+          resolved.push(annotation)
+          continue
+        }
+        const range = resolveBlockAnchor(blocks, annotation)
+        const segmentResult = resolveSegmentAnchors(blocks, annotation)
+        const next = Object.assign({}, annotation)
+        let localChanged = false
+        if (range.block !== null && range.block.index !== annotation.blockIndex) {
+          next.blockIndex = range.block.index
+          localChanged = true
+        }
+        if (range.block !== null && range.block.hash !== annotation.blockHash) {
+          next.blockHash = range.block.hash
+          localChanged = true
+        }
+        if (segmentResult !== null) {
+          next.segments = segmentResult.segments
+          const before = JSON.stringify(annotation.segments)
+          if (before !== JSON.stringify(segmentResult.segments)) localChanged = true
+        }
+        if (range.block !== null) {
+          const level = annotation.level === 'sentence' ? 'sentence' : 'block'
+          next.anchor = buildAnchor(blocks, range.block.index, level, segmentResult !== null ? segmentResult.segments : annotation.segments)
+          if (next.anchor !== null && typeof annotation.quote === 'string') next.anchor.quote = annotation.quote
+        }
+        const nextStale = range.stale || (segmentResult !== null && segmentResult.stale)
+        if (next.stale !== nextStale) localChanged = true
+        next.stale = nextStale
+        if (nextStale) {
+          stale += 1
+          if (next.unmatched !== true) localChanged = true
+          next.unmatched = true
+        } else if (next.unmatched === true) {
+          next.unmatched = false
+          localChanged = true
+        }
+        if (localChanged) changed += 1
+        resolved.push(next)
+      }
+      return { annotations: resolved, changed, stale }
+    }
+    // #endregion screenplay-anchor
 
     function splitBlocks(text) {
       return parseScreenplay(text)
@@ -1031,6 +1236,7 @@ window.__ModuleLoader__.load({
       const toastTimer = useRef(undefined)
       const flashTimer = useRef(undefined)
       const savedSelectionRef = useRef(null)
+      const reanchoredForRef = useRef('')
       const rootRef = useRef(null)
       const bodyRef = useRef(null)
 
@@ -1271,6 +1477,24 @@ window.__ModuleLoader__.load({
 
       const blocks = useMemo(() => splitBlocks(doc.text), [doc.text])
       const highlightPlans = useMemo(() => buildHighlightPlans(blocks, annotations, editing), [blocks, annotations, editing])
+      // Re-anchor annotations automatically when a new draft version arrives.
+      // One attempt per version; stale notes keep the stale banner up.
+      useEffect(() => {
+        if (doc.status !== 'ready' || doc.version === null) return
+        if (annotations.length === 0) return
+        if (baseVersion === null || baseVersion === doc.version) return
+        const key = `${docPath}\u0000${doc.version}`
+        if (reanchoredForRef.current === key) return
+        reanchoredForRef.current = key
+        const resolved = reanchorAnnotations(blocks, annotations)
+        setAnnotations(resolved.annotations)
+        if (resolved.stale === 0) {
+          setBaseVersion(doc.version)
+          if (resolved.changed > 0) showToast(tr('toast.reanchored'))
+        } else {
+          showToast(tr('toast.reanchoredPartial', { n: resolved.stale }))
+        }
+      }, [doc.status, doc.version, docPath, baseVersion, annotations, blocks, showToast, tr])
       const toc = useMemo(() => {
         const entries = []
         for (const block of blocks) {
@@ -1333,24 +1557,30 @@ window.__ModuleLoader__.load({
         if (segmentBlocks.length > 0) endBlockIndex = Math.max(startBlockIndex, ...segmentBlocks)
         else if (Number.isInteger(selectedEndBlockIndex) && selectedEndBlockIndex > startBlockIndex) endBlockIndex = selectedEndBlockIndex
         else if (Number.isInteger(existing?.endBlockIndex) && existing.endBlockIndex > startBlockIndex) endBlockIndex = existing.endBlockIndex
+        const editingLevel = existing !== undefined && existing.level === 'sentence'
+          ? 'sentence'
+          : (typeof selectedQuote === 'string' ? 'sentence' : 'block')
+        const editingSegments = existing !== undefined && Array.isArray(existing.segments)
+          ? existing.segments
+          : (Array.isArray(selectedSegments) && selectedSegments.length > 0 ? selectedSegments : undefined)
+        const editingAnchor = existing !== undefined && existing.anchor !== null && typeof existing.anchor === 'object'
+          ? existing.anchor
+          : buildAnchor(blocks, block.index, editingLevel, editingSegments)
         setBubble(null)
         setEditing({
           blockIndex: block.index,
           blockHash: block.hash,
           startBlockIndex,
           endBlockIndex,
+          anchor: editingAnchor === null ? undefined : editingAnchor,
           quote: existing !== undefined && typeof existing.quote === 'string'
             ? existing.quote
             : (typeof selectedQuote === 'string' ? selectedQuote : block.text.slice(0, 120)),
           note: existing !== undefined && typeof existing.note === 'string' ? existing.note : '',
           tag: existing !== undefined && typeof existing.tag === 'string' ? existing.tag : TAGS[0],
           id: existing !== undefined ? existing.id : undefined,
-          level: existing !== undefined && existing.level === 'sentence'
-            ? 'sentence'
-            : (typeof selectedQuote === 'string' ? 'sentence' : 'block'),
-          segments: existing !== undefined && Array.isArray(existing.segments)
-            ? existing.segments
-            : (Array.isArray(selectedSegments) && selectedSegments.length > 0 ? selectedSegments : undefined),
+          level: editingLevel,
+          segments: editingSegments,
         })
       }
 
@@ -1381,6 +1611,7 @@ window.__ModuleLoader__.load({
           tag: editing.tag,
           level: editing.level === 'sentence' ? 'sentence' : 'block',
           segments: Array.isArray(editing.segments) && editing.segments.length > 0 ? editing.segments : undefined,
+          anchor: editing.anchor === undefined || editing.anchor === null ? undefined : editing.anchor,
         }
         setAnnotations((prev) => [...prev.filter((annotation) => annotation.id !== next.id), next])
         closeEditor()
@@ -1503,39 +1734,11 @@ window.__ModuleLoader__.load({
         try {
           const loaded = await io.current.readDoc(docPath, controller.signal)
           const nextBlocks = splitBlocks(loaded.text)
-          let unmatched = 0
-          const relocated = live.current.annotations.map((annotation) => {
-            const segments = Array.isArray(annotation.segments)
-              ? annotation.segments.map((segment) => {
-                  const text = segment !== null && typeof segment === 'object' && typeof segment.text === 'string' ? segment.text : ''
-                  const byHash = nextBlocks.find((block) => segment !== null && typeof segment === 'object' && typeof segment.blockHash === 'string' && segment.blockHash !== '' && segment.blockHash === block.hash)
-                  const byText = text !== '' ? nextBlocks.find((block) => block.text.includes(text.slice(0, 24))) : undefined
-                  const match = byHash !== undefined ? byHash : byText
-                  if (match === undefined) return Object.assign({}, segment, { unmatched: true })
-                  return Object.assign({}, segment, { blockIndex: match.index, blockHash: match.hash, unmatched: false })
-                })
-              : undefined
-            const segmentMatched = segments !== undefined ? segments.filter((segment) => segment.unmatched !== true) : []
-            const allSegmentsUnmatched = segments !== undefined && segments.length > 0 && segmentMatched.length === 0
-            const anchor = segmentMatched.length > 0 ? segmentMatched[0] : undefined
-            const byHash = anchor === undefined && annotation.blockHash !== undefined && annotation.blockHash !== ''
-              ? nextBlocks.find((block) => block.hash === annotation.blockHash)
-              : undefined
-            const byQuote = anchor === undefined && byHash === undefined && typeof annotation.quote === 'string' && annotation.quote !== ''
-              ? nextBlocks.find((block) => block.text.includes(String(annotation.quote).slice(0, 24)))
-              : undefined
-            const match = anchor !== undefined ? { index: anchor.blockIndex, hash: anchor.blockHash } : (byHash !== undefined ? { index: byHash.index, hash: byHash.hash } : (byQuote !== undefined ? { index: byQuote.index, hash: byQuote.hash } : undefined))
-            if (allSegmentsUnmatched || (match === undefined && anchor === undefined && annotation.blockHash !== undefined && annotation.blockHash !== '')) {
-              unmatched += 1
-              return Object.assign({}, annotation, segments === undefined ? {} : { segments }, { unmatched: true })
-            }
-            if (match === undefined) return Object.assign({}, annotation, segments === undefined ? {} : { segments })
-            return Object.assign({}, annotation, segments === undefined ? {} : { segments }, { blockIndex: match.index, blockHash: match.hash, unmatched: false })
-          })
+          const resolved = reanchorAnnotations(nextBlocks, live.current.annotations)
           applyLoadedDoc(loaded)
-          setAnnotations(relocated)
-          setBaseVersion(loaded.version ?? null)
-          showToast(unmatched > 0 ? tr('toast.relocatedPartial', { n: unmatched }) : tr('toast.relocated'))
+          setAnnotations(resolved.annotations)
+          if (resolved.stale === 0) setBaseVersion(loaded.version ?? null)
+          showToast(resolved.stale > 0 ? tr('toast.relocatedPartial', { n: resolved.stale }) : tr('toast.relocated'))
         } catch (error) {
           showToast(tr('toast.failed', { msg: messageOf(error) }))
         }
@@ -1743,7 +1946,7 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                   h('div', null, annotation.note),
-                  annotation.unmatched === true ? h('div', { className: 'spm-hint' }, tr('note.unmatched')) : null,
+                  annotation.unmatched === true || annotation.stale === true ? h('div', { className: 'spm-hint' }, tr('note.unmatched')) : null,
                 )
           ))) : null,
           editorAtEnd && inGroup !== true ? renderEditor() : null,
