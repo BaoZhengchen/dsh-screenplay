@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const PACKAGE_ID = '@local/dsh-screenplay'
     const NS = 'screenplay'
     const KIND = 'screenplay'
-    const BUILD = '0.3.3'
+    const BUILD = '0.3.4'
     const SCRIPT_DIR = '剧本'
     const SIDECAR_DIR = '.dsh-screenplay'
     const DOC_EXT = /\.(md|txt|fountain)$/i
@@ -1756,11 +1756,22 @@ window.__ModuleLoader__.load({
         }
         const ranges = []
         if (editing !== null && editing.level === 'sentence') {
-          const start = Number.isInteger(editing.startBlockIndex) ? editing.startBlockIndex : editing.blockIndex
-          let end = Number.isInteger(editing.endBlockIndex) ? editing.endBlockIndex : start
+          const indices = []
+          if (Number.isInteger(editing.startBlockIndex)) indices.push(editing.startBlockIndex)
+          if (Number.isInteger(editing.endBlockIndex)) indices.push(editing.endBlockIndex)
+          if (Number.isInteger(editing.blockIndex)) indices.push(editing.blockIndex)
           const fromSegments = segmentRange(editing.segments)
-          if (fromSegments !== null && fromSegments.end > end) end = fromSegments.end
-          if (end > start) ranges.push({ start, end, editing: true, key: 'edit' })
+          if (fromSegments !== null) indices.push(fromSegments.start, fromSegments.end)
+          const plan = planQuoteHighlights(blocks, editing.quote)
+          if (plan.size > 1) {
+            const keys = Array.from(plan.keys())
+            indices.push(Math.min(...keys), Math.max(...keys))
+          }
+          if (indices.length > 0) {
+            const start = Math.min(...indices)
+            const end = Math.max(...indices)
+            if (end > start) ranges.push({ start, end, editing: true, key: 'edit' })
+          }
         }
         for (const annotation of annotations) {
           if (annotation === null || typeof annotation !== 'object' || annotation.level !== 'sentence') continue
